@@ -1,0 +1,16 @@
+{
+  "name": "kimi-stats-bar",
+  "version": "1.0.0",
+  "description": "在 TUI 底部状态栏显示会话用量统计(项目/分支/模式/模型、轮步、LLM 耗时、TTFT、tok/s、缓存命中率、token 累计,右侧 5h/7d 配额)。安装后自动配置 status_line,无需手改 tui.toml(需要 kimi-code ≥ 0.30.0,Node.js 在 PATH 上)",
+  "interface": {
+    "displayName": "Kimi 会话统计条",
+    "shortDescription": "会话轮步/TTFT/tok/s/cache/token 累计 + 5h/7d 配额,显示于 TUI 底部状态栏"
+  },
+  "hooks": [
+    {
+      "event": "SessionStart",
+      "command": "node ./scripts/setup_statusline.mjs",
+      "timeout": 10
+    }
+  ]
+}

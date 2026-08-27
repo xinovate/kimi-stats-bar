@@ -16,12 +16,13 @@
  */
 
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const HOME = homedir();
-const KIMI_DIR = join(HOME, '.kimi-code');
+const KIMI_DIR = process.env.KIMI_CODE_HOME || join(HOME, '.kimi-code');
 const CACHE_DIR = join(KIMI_DIR, 'statusline-cache');
 const QUOTA_TTL_MS = 60_000;
 
@@ -300,8 +301,35 @@ function visWidth(s) {
   return w;
 }
 
+// ---------- plugin self-policing ----------
+// When this copy runs from plugins/managed (installed via `/plugins install`)
+// and the plugin record is gone (removed) or disabled, take our block out of
+// tui.toml and exit nonzero so the TUI falls back to the built-in footer —
+// exactly what a disabled plugin should leave. Dev checkouts never police
+// themselves; an unreadable installed.json fails open.
+function pluginDisabled() {
+  const here = fileURLToPath(import.meta.url);
+  if (!here.includes(join('plugins', 'managed'))) return false;
+  try {
+    const records = JSON.parse(readFileSync(join(KIMI_DIR, 'plugins', 'installed.json'), 'utf8')).plugins;
+    if (!Array.isArray(records)) return false;
+    for (const rec of records) {
+      if (rec && rec.id === 'kimi-stats-bar') return rec.enabled === false;
+    }
+    return true; // no record left: plugin was removed
+  } catch {
+    return false;
+  }
+}
+
 // ---------- main ----------
 async function main() {
+  if (pluginDisabled()) {
+    try {
+      execFileSync('node', [join(dirname(fileURLToPath(import.meta.url)), 'scripts', 'setup_statusline.mjs'), '--remove'], { timeout: 2000, stdio: 'ignore' });
+    } catch { /* best-effort */ }
+    process.exit(1);
+  }
   let p = {};
   try { p = JSON.parse(readStdin()); } catch { /* ignore */ }
   dbg(`payload keys: ${Object.keys(p).join(',')} sessionId=${p.sessionId} model=${p.model} version=${p.version}`);

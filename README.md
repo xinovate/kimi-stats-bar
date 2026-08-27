@@ -53,10 +53,11 @@ web 端有两种注入方式,按你的浏览器选一:
 
 注入一次后对同一会话页长期有效(刷新、切会话都自动恢复)。
 
-**自动注入(推荐)**:让 watcher 常驻后台,之后任何时候打开 kimi web 的浏览器 pane 都会自动注入,无需手动:
+**自动注入(推荐)**:让 watcher 常驻,之后任何时候打开 kimi web 的浏览器 pane 都会自动注入,无需手动:
 
 ```bash
-nohup ./watch-inject.sh >/dev/null 2>&1 &
+./install-launchd.sh            # launchd 登录自启(重启不失效),卸载加 uninstall 参数
+nohup ./watch-inject.sh >/dev/null 2>&1 &   # 或者只在当前会话临时跑
 ```
 
 watcher 每 4s 轮询 `cmux tree`,发现 URL 指向本机 kimi web server 端口的浏览器 surface 就注入一次(记录在 `.injected-surfaces`,不重复注入)。
@@ -98,7 +99,19 @@ yi-wiki  main auto | K3-256k·high | 23轮·311步 · LLM 1h36m · TTFT 12.1s ·
 
 前缀 `项目名  分支 · 模式` 来自 stdin snapshot（`cwd` / `gitBranch` / `planMode` / `permissionMode`）；`command` 模式下内置槽位（项目、分支、模型等）不会自动显示，需要脚本自己输出。
 
-配置 `~/.kimi-code/tui.toml`（TUI 里 `/reload-tui` 立即生效）：
+### 安装方式一:kimi-code 插件(推荐)
+
+TUI 里执行:
+
+```
+/plugins install https://github.com/xinovate/kimi-stats-bar
+```
+
+插件的 `SessionStart` hook 会自动把 statusline 写进 `tui.toml`(带 `# >>> kimi-stats-bar` 标记块,幂等;已有别人的 `command` 不会覆盖)。新开一个会话( `/new` )或重启 CLI 后 `/reload-tui` 生效。`/plugins disable` / `/plugins remove` 后,状态栏命令下次运行时会自清理标记块并回退内置 footer。
+
+### 安装方式二:手动配置
+
+`~/.kimi-code/tui.toml`(TUI 里 `/reload-tui` 立即生效):
 
 ```toml
 [status_line]

@@ -1,6 +1,6 @@
 # kimi-stats-bar
 
-给 [Kimi Code](https://www.kimi.com/code) 加一条会话用量统计——**Web UI 端**(`kimi web` 页面,支持 cmux 内嵌浏览器和任意浏览器的油猴脚本)+ **CLI TUI 端**(statusline),同一份统计口径。
+给 [Kimi Code](https://www.kimi.com/code) 加一条会话用量统计——**Web UI 端**(`kimi web` 页面,支持 cmux 内嵌浏览器 / Chrome 扩展 / 油猴脚本三种注入方式)+ **CLI TUI 端**(statusline,可插件安装),同一份统计口径。
 
 ![screenshot](screenshot.png)
 
@@ -70,7 +70,15 @@ timeout = 2
 
 watcher 每 4s 轮询 `cmux tree`,发现 URL 指向本机 kimi web server 端口的浏览器 surface 就注入一次(记录在 `.injected-surfaces`,不重复注入)。
 
-### 方式二:任意浏览器 + 油猴(跨平台)
+### 方式二:Chrome 扩展(推荐,参考 isme-jzy/kimi-usage-stats 的交付方式)
+
+1. `chrome://extensions` 打开右上角「开发者模式」;
+2. 「加载已解压的扩展程序」→ 选择本仓库目录(根目录的 `manifest.json` 即扩展定义);
+3. 用 Chrome 打开 `kimi web` 地址(`http://127.0.0.1:<端口>`),统计条自动出现。
+
+content script 以 `world: "MAIN"` 运行,行为与 cmux 注入完全一致;`git pull` 后到 `chrome://extensions` 点一下刷新即更新。Edge 等 Chromium 系同样适用。
+
+### 方式三:任意浏览器 + 油猴(跨平台)
 
 1. 浏览器装 [Tampermonkey](https://www.tampermonkey.net/)(Chrome / Edge / Firefox / Safari 均可);
 2. 打开 [kimi-stats-bar.user.js](https://raw.githubusercontent.com/xinovate/kimi-stats-bar/main/kimi-stats-bar.user.js),Tampermonkey 会弹出安装页(本地试用就在 Tampermonkey 面板新建脚本,把文件内容粘进去);
@@ -87,9 +95,9 @@ watcher 每 4s 轮询 `cmux tree`,发现 URL 指向本机 kimi web server 端口
 - API key 登录(无订阅配额)时 `5h`/`7d` 两段自动隐藏。
 - 依赖 kimi web server 的 REST/WS 实验性 API,官方随时可能改字段;以 `GET /openapi.json` / `GET /asyncapi.json` 为准。
 
-## 为什么不用 Chrome 扩展
+## 与 isme-jzy/kimi-usage-stats 的关系
 
-[isme-jzy/kimi-usage-stats](https://github.com/isme-jzy/kimi-usage-stats) 是很好的 Chrome 扩展方案(还有逐模型拆分、热力图、花费估算),但 Chrome MV3 扩展进不了 cmux 的 WKWebView。本项目的 web 端是它的"cmux 平替 + 轻量油猴版":功能更少,但 cmux 和普通浏览器都能跑。
+[kimi-usage-stats](https://github.com/isme-jzy/kimi-usage-stats) 是功能完整的 Chrome 扩展（逐模型拆分、热力图、花费估算、dashboard），但 Chrome MV3 扩展进不了 cmux 的 WKWebView。本项目的 web 端借鉴了它的扩展交付方式（`manifest.json` + content script），但保持"只显示一条统计"的轻量定位：cmux、Chrome 扩展、油猴三条路共用同一份 `kimi-stats-bar.js`。
 
 ## CLI TUI statusline
 

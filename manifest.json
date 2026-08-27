@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "kimi-stats-bar",
+  "version": "1.0.0",
+  "description": "Kimi Code Web 会话统计条:5h/7d 配额 · 轮步 · LLM/tool 耗时 · TTFT · tok/s · cache · token 累计。纯本地,数据只来自本机 kimi web server。",
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+      "js": ["kimi-stats-bar.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}

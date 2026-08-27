@@ -240,8 +240,8 @@ const GROUP = NO_COLOR ? ' | ' : ' ' + paint(C.sep, '|') + ' ';
 // ---------- right-align helpers ----------
 // Width of the terminal the TUI runs in. stdout is a pipe and the TUI spawns
 // us detached (setsid → no controlling terminal, /dev/tty gives ENXIO), so
-// walk the ancestor chain and query the tty the TUI itself sits on — same
-// approach as kimi-usage. Null when undetectable.
+// walk the ancestor chain and query the tty the TUI itself sits on.
+// Null when undetectable.
 // Note: node's tty.ReadStream(fd).columns is undefined for an opened-by-fd
 // tty, so ask stty instead (-f macOS / -F Linux).
 function colsOf(dev) {

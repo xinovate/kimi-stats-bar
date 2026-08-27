@@ -70,7 +70,7 @@ timeout = 2
 
 watcher 每 4s 轮询 `cmux tree`,发现 URL 指向本机 kimi web server 端口的浏览器 surface 就注入一次(记录在 `.injected-surfaces`,不重复注入)。
 
-### 方式二:Chrome 扩展(推荐,参考 isme-jzy/kimi-usage-stats 的交付方式)
+### 方式二:Chrome 扩展(推荐)
 
 1. `chrome://extensions` 打开右上角「开发者模式」;
 2. 「加载已解压的扩展程序」→ 选择本仓库目录(根目录的 `manifest.json` 即扩展定义);
@@ -94,10 +94,6 @@ content script 以 `world: "MAIN"` 运行,行为与 cmux 注入完全一致;`git
 - `tool` 耗时是近似值(回合总时长 − LLM 耗时),不含等待批准等人肉时间。
 - API key 登录(无订阅配额)时 `5h`/`7d` 两段自动隐藏。
 - 依赖 kimi web server 的 REST/WS 实验性 API,官方随时可能改字段;以 `GET /openapi.json` / `GET /asyncapi.json` 为准。
-
-## 与 isme-jzy/kimi-usage-stats 的关系
-
-[kimi-usage-stats](https://github.com/isme-jzy/kimi-usage-stats) 是功能完整的 Chrome 扩展（逐模型拆分、热力图、花费估算、dashboard），但 Chrome MV3 扩展进不了 cmux 的 WKWebView。本项目的 web 端借鉴了它的扩展交付方式（`manifest.json` + content script），但保持"只显示一条统计"的轻量定位：cmux、Chrome 扩展、油猴三条路共用同一份 `kimi-stats-bar.js`。
 
 ## CLI TUI statusline
 

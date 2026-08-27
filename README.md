@@ -53,12 +53,20 @@ web 端有两种注入方式,按你的浏览器选一:
 
 注入一次后对同一会话页长期有效(刷新、切会话都自动恢复)。
 
-**自动注入(推荐)**:让 watcher 常驻,之后任何时候打开 kimi web 的浏览器 pane 都会自动注入,无需手动:
+**自动注入(推荐)**:让 watcher 常驻,之后任何时候打开 kimi web 的浏览器 pane 都会自动注入,无需手动。
 
-```bash
-./install-launchd.sh            # launchd 登录自启(重启不失效),卸载加 uninstall 参数
-nohup ./watch-inject.sh >/dev/null 2>&1 &   # 或者只在当前会话临时跑
+watcher 由 kimi-code 的 `SessionStart` hook 拉起(插件用户自动获得;手动安装就在 `~/.kimi-code/config.toml` 末尾加):
+
+```toml
+[[hooks]]
+event = "SessionStart"
+command = "nohup /path/to/kimi-stats-bar/watch-inject.sh >/dev/null 2>&1 &"
+timeout = 2
 ```
+
+> 为什么不能 launchd / cron 自启:cmux 的 socket 只允许 **cmux 内部进程的子孙**连接(外部进程报 `Access denied`),所以必须由 TUI 的 hook 拉起;watcher 有单实例守卫,重复拉起无影响,不在 cmux 里运行时自动静默退出。
+
+也可以临时手动跑:`nohup ./watch-inject.sh >/dev/null 2>&1 &`
 
 watcher 每 4s 轮询 `cmux tree`,发现 URL 指向本机 kimi web server 端口的浏览器 surface 就注入一次(记录在 `.injected-surfaces`,不重复注入)。
 

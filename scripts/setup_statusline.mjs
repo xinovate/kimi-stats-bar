@@ -23,6 +23,7 @@ import { readFileSync, writeFileSync, existsSync, copyFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 
 const MARK_BEGIN = '# >>> kimi-stats-bar';
 const MARK_END = '# <<< kimi-stats-bar';
@@ -110,6 +111,15 @@ function remove() {
 
 try {
   if (process.argv.includes('--remove')) remove();
-  else install();
+  else {
+    install();
+    // 顺带确保 cmux 自动注入 watcher 在跑(无 cmux 环境时 watcher 自行静默退出)
+    if (existsSync('/Applications/cmux.app/Contents/Resources/bin/cmux')) {
+      try {
+        const child = spawn('nohup', [join(PLUGIN_ROOT, 'watch-inject.sh')], { detached: true, stdio: 'ignore' });
+        child.unref();
+      } catch { /* best-effort */ }
+    }
+  }
 } catch { /* fail-open */ }
 process.exit(0);

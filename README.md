@@ -111,6 +111,8 @@ yi-wiki  main auto | K3-256k·high | 23轮·311步 · LLM 1h36m · TTFT 12.1s ·
 
 前缀 `项目名  分支 · 模式` 来自 stdin snapshot（`cwd` / `gitBranch` / `planMode` / `permissionMode`）；`command` 模式下内置槽位（项目、分支、模型等）不会自动显示，需要脚本自己输出。
 
+分支名超过 28 个可见列时会在中间省略，优先保留「类型 / 归属人」和尾部业务主题：`feature/wx/20260901-教师端错题本改造` 显示为 `feature/wx/…教师端错题本改造`。
+
 ### 安装方式一:kimi-code 插件(推荐)
 
 TUI 里执行:
@@ -130,9 +132,10 @@ TUI 里执行:
 command = "node /path/to/kimi-stats-bar/statusline.mjs"
 ```
 
-- 数据源：TUI 经 stdin 传入的 JSON snapshot（`sessionId` 等）+ 增量扫描 `~/.kimi-code/sessions/*/session_<id>/agents/main/wire.jsonl`（offset 缓存在 `~/.kimi-code/statusline-cache/`，不重复解析全量）；`5h`/`7d` 走同一 REST 接口，60s 缓存 + 失败回退旧值
+- 数据源：TUI 经 stdin 传入的 JSON snapshot（`sessionId` 等）+ 增量扫描 `~/.kimi-code/sessions/*/session_<id>/agents/main/wire.jsonl`（offset 缓存在 `~/.kimi-code/statusline-cache/`，不重复解析全量）；`tok/s` 显示最近一个完整 LLM 生成步骤的速度，不再用变化极慢的会话累计平均
+- `5h`/`7d` 每 60s 异步刷新：优先读取 `kimi web` 的本地 REST；本地服务未运行时，使用 Kimi Code 已有 OAuth 凭据请求官方 managed usage 接口。网络刷新在独立后台进程执行，不占用 statusline 300ms 时限；首次或旧缓存刷新中显示 `5h … · 7d …`，成功后替换为百分比，失败或未登录时隐藏。失败尝试限流为每分钟最多一次，旧值最多保留 5 分钟
 - 满足官方 300ms 上限：热路径约 30~50ms，冷启动约 250ms
-- `kimi web` 服务没在跑时自动隐藏配额段；新会话显示 `0轮·0步` 占位
+- 未登录 Kimi Code OAuth 且 `kimi web` 服务没在跑时自动隐藏配额段；新会话显示 `0轮·0步` 占位
 - 无 `tool` 段（wire.jsonl 不含可可靠归因的工具时长）
 - 平台：macOS / Linux 全功能（右对齐依赖 `ps` + `stty`）；Windows 上宽度探测自动退化，配额段改为 `|` 拼接，其余正常
 

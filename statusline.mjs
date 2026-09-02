@@ -5,26 +5,31 @@
  * Reads the JSON snapshot the TUI pipes to stdin (status_line.command contract,
  * 300ms ceiling) and prints ONE line, e.g.:
  *
- *   5h 25% · 7d 41% · 20轮·267步 · LLM 32m10s · TTFT 6.8s · 42 tok/s · cache 96% · ↑5.5M ↓31K Σ5.5M
+ *   20轮·267步 · LLM 32m10s · TTFT 6.8s · 42 tok/s · cache 96% · ↑5.5M ↓31K Σ5.5M   5h 25% · 7d 41%
  *
  * Data sources:
  *   - session stats: incremental scan of ~/.kimi-code/sessions/.../agents/main/wire.jsonl
  *     (offset cache in ~/.kimi-code/statusline-cache/)
- *   - 5h/7d quota:   GET http://127.0.0.1:<port>/api/v1/oauth/usage (kimi web server,
- *     port from ~/.kimi-code/server/instances/*.json, token ~/.kimi-code/server.token),
- *     cached 60s; omitted when unreachable.
+ *   - 5h/7d quota:   refreshed out of band every 60s. Prefer the local kimi web
+ *     server; when it is not running, query the managed Kimi usage endpoint with
+ *     ~/.kimi-code/credentials/kimi-code.json. Stale data is omitted after 5m.
  */
 
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, statSync, openSync, readSync, closeSync, existsSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
 const HOME = homedir();
 const KIMI_DIR = process.env.KIMI_CODE_HOME || join(HOME, '.kimi-code');
 const CACHE_DIR = join(KIMI_DIR, 'statusline-cache');
 const QUOTA_TTL_MS = 60_000;
+const QUOTA_MAX_STALE_MS = 5 * 60_000;
+const QUOTA_REFRESH_LOCK_MS = 15_000;
+const SESSION_CACHE_VERSION = 2;
+const BRANCH_MAX_WIDTH = 28;
+const MIN_SPEED_STREAM_MS = 100;
 
 // debug: `touch ~/.kimi-code/kimi-stats-debug` → trace goes to
 // ~/.kimi-code/statusline-cache/debug.log (delete the toggle file to stop)
@@ -57,7 +62,7 @@ function fmtDur(ms) {
 
 // ---------- session wire.jsonl incremental scan ----------
 function emptyAgg() {
-  return { offset: 0, size: 0, path: '', turns: 0, steps: 0, inOther: 0, inCR: 0, inCC: 0, out: 0, ttftSum: 0, ttftN: 0, streamSum: 0, llmMs: 0, effort: '' };
+  return { version: SESSION_CACHE_VERSION, offset: 0, size: 0, path: '', turns: 0, steps: 0, inOther: 0, inCR: 0, inCC: 0, out: 0, ttftSum: 0, ttftN: 0, streamSum: 0, latestTps: null, llmMs: 0, effort: '' };
 }
 
 function findWire(sessionId) {
@@ -77,7 +82,12 @@ function findWire(sessionId) {
 function scanSession(sessionId) {
   const cachePath = join(CACHE_DIR, `session-${sessionId}.json`);
   let agg = emptyAgg();
-  try { agg = { ...agg, ...JSON.parse(readFileSync(cachePath, 'utf8')) }; } catch { /* first run */ }
+  try {
+    const saved = JSON.parse(readFileSync(cachePath, 'utf8'));
+    // v1 only stored a session-wide speed average. Rescan once so existing
+    // sessions immediately get the latest-step metric without double-counting.
+    if (saved.version === SESSION_CACHE_VERSION) agg = { ...agg, ...saved };
+  } catch { /* first run */ }
 
   const wire = (agg.path && existsSync(agg.path)) ? agg.path : findWire(sessionId);
   if (!wire) return null;
@@ -129,6 +139,11 @@ function scanSession(sessionId) {
         if (typeof ev.llmStreamDurationMs === 'number') {
           agg.streamSum += ev.llmStreamDurationMs;
           agg.llmMs += ev.llmStreamDurationMs;
+          // Some synthetic/tool steps report output with a 0/1ms stream. They
+          // are not meaningful decode-speed samples (and would yield 100k+
+          // tok/s), so only retain a real streamed completion.
+          const speed = latestSpeedSample(ev, u);
+          if (speed !== null) agg.latestTps = speed;
         }
       }
     }
@@ -143,49 +158,140 @@ function scanSession(sessionId) {
 }
 
 // ---------- quota (5h / 7d) ----------
-async function fetchQuota() {
-  const cachePath = join(CACHE_DIR, 'quota.json');
-  let cached = null;
-  try {
-    cached = JSON.parse(readFileSync(cachePath, 'utf8'));
-    if (Date.now() - cached.ts < QUOTA_TTL_MS) return cached.data;
-  } catch { /* missing */ }
+const quotaCachePath = () => join(CACHE_DIR, 'quota.json');
+const quotaLockPath = () => join(CACHE_DIR, 'quota-refresh.lock');
 
-  let data = null;
+function asNumber(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function quotaPct(row) {
+  const d = row && (row.detail || row);
+  const limit = asNumber(d && d.limit);
+  if (!(limit > 0)) return null;
+  let used = asNumber(d.used);
+  const remaining = asNumber(d.remaining);
+  if (used === null && remaining !== null) used = limit - remaining;
+  if (used === null) return null;
+  return Math.round(Math.max(0, Math.min(100, (used / limit) * 100)));
+}
+
+function windowMinutes(row) {
+  const w = row && row.window;
+  const duration = asNumber(w && w.duration);
+  if (duration === null) return null;
+  const unit = String((w && (w.unit || w.timeUnit)) || '').toLowerCase();
+  if (unit.includes('minute')) return duration;
+  if (unit.includes('hour')) return duration * 60;
+  if (unit.includes('day')) return duration * 24 * 60;
+  if (unit.includes('week')) return duration * 7 * 24 * 60;
+  return null;
+}
+
+function parseQuota(body) {
+  const d = body && (body.data || body);
+  if (!d || (d.kind && d.kind !== 'ok')) return null;
+  const seven = d.summary || d.usage;
+  const five = (d.limits || []).find((row) => windowMinutes(row) === 300);
+  const data = { fiveH: quotaPct(five), sevenD: quotaPct(seven) };
+  return data.fiveH === null && data.sevenD === null ? null : data;
+}
+
+function heartbeatTime(v) {
+  const numeric = asNumber(v);
+  if (numeric !== null) return numeric;
+  const parsed = Date.parse(String(v || ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function quotaFromLocalServer() {
   try {
     const instDir = join(KIMI_DIR, 'server', 'instances');
-    let port = null, newest = 0;
+    let port = null, newest = -1;
     for (const f of readdirSync(instDir)) {
       if (!f.endsWith('.json')) continue;
       const j = JSON.parse(readFileSync(join(instDir, f), 'utf8'));
-      const hb = j.heartbeat_at || j.heartbeatAt || 0;
+      const hb = heartbeatTime(j.heartbeat_at || j.heartbeatAt);
       if (j.port && hb > newest) { newest = hb; port = j.port; }
     }
     const token = readFileSync(join(KIMI_DIR, 'server.token'), 'utf8').trim();
-    if (port && token) {
-      const res = await fetch(`http://127.0.0.1:${port}/api/v1/oauth/usage`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(200),
-      });
-      const body = await res.json();
-      const d = body.data || body;
-      const seven = d.summary;
-      const five = (d.limits || []).find((l) => l.window && l.window.unit === 'hour' && l.window.duration === 5);
-      const pct = (w) => (w && w.limit ? Math.round((w.used / w.limit) * 100) : null);
-      data = { fiveH: five ? pct(five) : null, sevenD: seven ? pct(seven) : null };
-    }
-  } catch { /* server not running → omit */ }
+    if (!port || !token) return null;
+    const res = await fetch(`http://127.0.0.1:${port}/api/v1/oauth/usage`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(1000),
+    });
+    return parseQuota(await res.json());
+  } catch {
+    return null;
+  }
+}
 
-  if (data) {
+async function quotaFromManagedApi() {
+  try {
+    const credential = JSON.parse(readFileSync(join(KIMI_DIR, 'credentials', 'kimi-code.json'), 'utf8'));
+    if (!credential.access_token) return null;
+    const base = (process.env.KIMI_CODE_BASE_URL || 'https://api.kimi.com/coding/v1').replace(/\/+$/, '');
+    const res = await fetch(`${base}/usages`, {
+      headers: { Authorization: `Bearer ${credential.access_token}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    return parseQuota(await res.json());
+  } catch {
+    return null;
+  }
+}
+
+async function refreshQuota() {
+  try {
+    const data = await quotaFromLocalServer() || await quotaFromManagedApi();
+    let cached = {};
+    try { cached = JSON.parse(readFileSync(quotaCachePath(), 'utf8')); } catch { /* missing */ }
     try {
       mkdirSync(CACHE_DIR, { recursive: true });
-      writeFileSync(cachePath, JSON.stringify({ ts: Date.now(), data }));
+      const now = Date.now();
+      writeFileSync(quotaCachePath(), JSON.stringify(data
+        ? { ts: now, attemptTs: now, data }
+        : { ...cached, attemptTs: now }));
     } catch { /* best-effort */ }
-    return data;
+  } finally {
+    try { unlinkSync(quotaLockPath()); } catch { /* best-effort */ }
   }
-  // Fetch failed (server down or >200ms cold): keep showing the last known
-  // quota rather than dropping the segment.
-  return cached ? cached.data : null;
+}
+
+function startQuotaRefresh() {
+  try {
+    mkdirSync(CACHE_DIR, { recursive: true });
+    try {
+      const lockAge = Date.now() - statSync(quotaLockPath()).mtimeMs;
+      if (lockAge < QUOTA_REFRESH_LOCK_MS) return;
+      unlinkSync(quotaLockPath());
+    } catch { /* no live lock */ }
+    const fd = openSync(quotaLockPath(), 'wx');
+    closeSync(fd);
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--refresh-quota'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.on('error', () => { try { unlinkSync(quotaLockPath()); } catch { /* best-effort */ } });
+    child.unref();
+  } catch { /* another statusline process won the lock */ }
+}
+
+function fetchQuota() {
+  let cached = null;
+  try { cached = JSON.parse(readFileSync(quotaCachePath(), 'utf8')); } catch { /* missing */ }
+  const age = cached && Number.isFinite(cached.ts) ? Date.now() - cached.ts : Infinity;
+  const attemptAge = cached && Number.isFinite(cached.attemptTs) ? Date.now() - cached.attemptTs : age;
+  const needsRefresh = attemptAge >= QUOTA_TTL_MS;
+  if (needsRefresh) startQuotaRefresh();
+  // Never present an indefinitely old number as the current account quota.
+  if (cached && age < QUOTA_MAX_STALE_MS) return cached.data;
+  // Distinguish the first/outdated refresh from an established failure. The
+  // statusline cannot await the network without risking its 300ms deadline.
+  return needsRefresh ? { pending: true } : null;
 }
 
 // ---------- colors ----------
@@ -301,6 +407,43 @@ function visWidth(s) {
   return w;
 }
 
+function takeCells(s, maxWidth, fromEnd = false) {
+  if (maxWidth <= 0) return '';
+  const chars = [...s];
+  if (fromEnd) chars.reverse();
+  const kept = [];
+  let width = 0;
+  for (const ch of chars) {
+    const next = visWidth(ch);
+    if (width + next > maxWidth) break;
+    kept.push(ch);
+    width += next;
+  }
+  if (fromEnd) kept.reverse();
+  return kept.join('');
+}
+
+function compactBranch(branch, maxWidth = BRANCH_MAX_WIDTH) {
+  if (visWidth(branch) <= maxWidth) return branch;
+  const parts = branch.split('/');
+  // Branch conventions usually put the high-value type and owner in the
+  // first two path segments. Keep those and the business topic at the tail;
+  // the date/ticket middle is the least costly place to elide.
+  if (parts.length >= 3) {
+    const prefix = parts.slice(0, 2).join('/') + '/';
+    const tailBudget = maxWidth - visWidth(prefix) - 1;
+    if (tailBudget >= 6) return prefix + '…' + takeCells(branch.slice(prefix.length), tailBudget, true);
+  }
+  const body = maxWidth - 1;
+  const headWidth = Math.floor(body / 2);
+  return takeCells(branch, headWidth) + '…' + takeCells(branch, body - headWidth, true);
+}
+
+function latestSpeedSample(ev, usage = ev && ev.usage) {
+  if (!ev || ev.llmStreamDurationMs < MIN_SPEED_STREAM_MS || !(usage && usage.output > 0)) return null;
+  return (usage.output / ev.llmStreamDurationMs) * 1000;
+}
+
 // ---------- plugin self-policing ----------
 // When this copy runs from plugins/managed (installed via `/plugins install`)
 // and the plugin record is gone (removed) or disabled, take our block out of
@@ -344,7 +487,7 @@ async function main() {
   const mode = p.planMode ? 'plan' : (p.permissionMode || '');
   const gIdent = [
     proj && paint(C.project, proj),
-    p.gitBranch && paint(C.branch, ` ${p.gitBranch}`),
+    p.gitBranch && paint(C.branch, ` ${compactBranch(p.gitBranch)}`),
     mode && paint(p.planMode ? C.modePlan : C.mode, mode),
   ].filter(Boolean).join(' ');
 
@@ -358,7 +501,7 @@ async function main() {
     gPace.push(`${agg.turns}轮·${agg.steps}步`);
     if (agg.llmMs > 0) gPace.push(`LLM ${fmtDur(agg.llmMs)}`);
     if (agg.ttftN > 0) gPace.push(`TTFT ${(agg.ttftSum / agg.ttftN / 1000).toFixed(1)}s`);
-    if (agg.streamSum > 0 && agg.out > 0) gPace.push(`${Math.round((agg.out / agg.streamSum) * 1000)} tok/s`);
+    if (agg.latestTps != null) gPace.push(`${Math.round(agg.latestTps)} tok/s`);
   } else {
     gPace.push('0轮·0步'); // fresh session, no wire file yet
   }
@@ -376,8 +519,12 @@ async function main() {
   // group 5 (right-aligned): subscription quota, white
   const gQuota = [];
   if (quota) {
-    if (quota.fiveH != null) gQuota.push(paint(C.quota, `5h ${quota.fiveH}%`));
-    if (quota.sevenD != null) gQuota.push(paint(C.quota, `7d ${quota.sevenD}%`));
+    if (quota.pending) {
+      gQuota.push(paint(C.sep, '5h …'), paint(C.sep, '7d …'));
+    } else {
+      if (quota.fiveH != null) gQuota.push(paint(C.quota, `5h ${quota.fiveH}%`));
+      if (quota.sevenD != null) gQuota.push(paint(C.quota, `7d ${quota.sevenD}%`));
+    }
   }
 
   const left = [gIdent, gModel.map((s) => paint(C.model, s)).join(''), gPace.map((s) => paint(C.pace, s)).join(SEP), gTok.join(SEP)]
@@ -405,4 +552,13 @@ async function main() {
 // the TUI treats that as command failure and drops the line.
 process.stdout.on('error', () => process.exit(0));
 
-main().catch(() => process.exit(1));
+const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (isDirectRun) {
+  if (process.argv.includes('--refresh-quota')) {
+    refreshQuota().then(() => process.exit(0), () => process.exit(0));
+  } else {
+    main().catch(() => process.exit(1));
+  }
+}
+
+export { compactBranch, latestSpeedSample, parseQuota, visWidth };

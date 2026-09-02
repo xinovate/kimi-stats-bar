@@ -95,11 +95,13 @@ while true; do
       esac
       port=$(echo "$url" | sed -E 's|https?://[^:/]+:([0-9]+).*|\1|')
       echo "$PORTS" | grep -qx "$port" || continue
-      # 已注入过(ref+url 组合)就跳过
-      grep -qx "$surface $url" "$STATE_FILE" && continue
+      # addinitscript 在 surface 内对所有后续导航持久有效(刷新、切会话、换端口都自动恢复),
+      # 所以按 surface 记录一次即可;若按 surface+url 记录,每次 SPA 跳转都会被当成
+      # 新页面重新注入并 reload,表现为「页面经常自动刷新」
+      grep -qx "$surface" "$STATE_FILE" && continue
       echo "[$(date +%H:%M:%S)] 发现待注入: $surface $url"
       if inject "$surface"; then
-        echo "$surface $url" >> "$STATE_FILE"
+        echo "$surface" >> "$STATE_FILE"
       fi
     done
   fi

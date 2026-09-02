@@ -76,7 +76,7 @@
     if (el) return el;
     var st = document.createElement('style');
     st.textContent =
-      '#' + BAR_ID + '{position:fixed;left:50%;transform:translateX(-50%);bottom:3px;z-index:99999;' +
+      '#' + BAR_ID + '{position:fixed;left:0;transform:translateX(-50%);bottom:3px;z-index:99999;' +
       'max-width:94vw;padding:2px 9px;border-radius:999px;' +
       'font:10px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;' +
       'background:rgba(255,255,255,.55);color:#26262c;border:1px solid rgba(0,0,0,.08);' +
@@ -95,6 +95,25 @@
     return el;
   }
 
+  // 左侧功能栏宽度:取贴左缘、近全高的 aside/nav 类元素(kimi web 是 <aside class="side">),
+  // 找不到返回 0;侧栏折叠/展开时随下次渲染自动跟进
+  function sidebarWidth() {
+    var els = document.querySelectorAll('aside, nav, [class*="sidebar" i], [class*="side-bar" i]');
+    var w = 0;
+    for (var i = 0; i < els.length; i++) {
+      var r = els[i].getBoundingClientRect();
+      if (r.left <= 1 && r.height >= window.innerHeight * 0.6 &&
+          r.width >= 40 && r.width <= window.innerWidth * 0.5 && r.width > w) w = r.width;
+    }
+    return w;
+  }
+
+  // 水平居中于「视口减去左侧栏」的内容区,而不是整个窗口
+  function positionBar(el) {
+    var sw = sidebarWidth();
+    el.style.left = Math.round(sw + (window.innerWidth - sw) / 2) + 'px';
+  }
+
   // 双色调片段:英文标签暗,数值亮
   function seg(label, value) {
     return '<span class="d">' + label + '</span> <span class="v">' + value + '</span>';
@@ -103,6 +122,7 @@
 
   function render() {
     var el = ensureBar();
+    positionBar(el);
     var parts = [];
     if (S.q5h != null) parts.push(seg('5h', S.q5h + '%'));
     if (S.q7d != null) parts.push(seg('7d', S.q7d + '%'));
@@ -203,6 +223,7 @@
     if (!sid) {
       wsSid = null;
       var el = ensureBar();
+      positionBar(el);
       var q = [];
       if (S.q5h != null) q.push(seg('5h', S.q5h + '%'));
       if (S.q7d != null) q.push(seg('7d', S.q7d + '%'));
